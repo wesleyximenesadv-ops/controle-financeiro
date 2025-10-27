@@ -26,10 +26,16 @@ def init_db(conn: sqlite3.Connection) -> None:
             descricao TEXT,
             valor REAL NOT NULL,             -- valor positivo
             conta TEXT,
-            tags TEXT
+            tags TEXT,
+            user_id TEXT                     -- identificador do usuário (multi-tenant)
         )
         """
     )
+    # Migração leve: adicionar coluna user_id se não existir
+    cur.execute("PRAGMA table_info(transacoes)")
+    cols = [r[1] for r in cur.fetchall()]
+    if "user_id" not in cols:
+        cur.execute("ALTER TABLE transacoes ADD COLUMN user_id TEXT")
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_transacoes_data ON transacoes(data)
@@ -43,6 +49,16 @@ def init_db(conn: sqlite3.Connection) -> None:
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_transacoes_categoria ON transacoes(categoria)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_transacoes_user ON transacoes(user_id)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_transacoes_user_data ON transacoes(user_id, data)
         """
     )
     conn.commit()
@@ -67,12 +83,13 @@ def add_transaction(
     valor: float,
     conta: str,
     tags: str,
+    user_id: str,
 ) -> int:
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO transacoes (data, tipo, categoria, subcategoria, descricao, valor, conta, tags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO transacoes (data, tipo, categoria, subcategoria, descricao, valor, conta, tags, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             _to_iso(data_lanc),
@@ -83,6 +100,7 @@ def add_transaction(
             float(valor),
             conta,
             tags,
+            user_id,
         ),
     )
     conn.commit()
@@ -91,6 +109,7 @@ def add_transaction(
 
 def get_transactions(
     conn: sqlite3.Connection,
+    user_id: str,
     tipo: Optional[str] = None,
     categoria: Optional[str] = None,
     subcategoria: Optional[str] = None,
@@ -99,9 +118,10 @@ def get_transactions(
     busca: Optional[str] = None,
 ) -> pd.DataFrame:
     sql = [
-        "SELECT id, data, tipo, categoria, subcategoria, descricao, valor, conta, tags FROM transacoes WHERE 1=1"
+        "SELECT id, data, tipo, categoria, subcategoria, descricao, valor, conta, tags FROM transacoes WHERE 1=1",
+        "AND user_id = ?",
     ]
-    params = []
+    params = [user_id]
 
     if tipo:
         sql.append("AND tipo = ?")
@@ -131,17 +151,17 @@ def get_transactions(
     return df
 
 
-def get_monthly_cashflow(conn: sqlite3.Connection, inicio: date, fim: date) -> pd.DataFrame:
+def get_monthly_cashflow(conn: sqlite3.Connection, inicio: date, fim: date, user_id: str) -> pd.DataFrame:
     sql = """
         SELECT
             strftime('%Y-%m', date(data)) AS ym,
             SUM(CASE WHEN tipo = 'Receita' THEN valor ELSE -valor END) AS valor
         FROM transacoes
-        WHERE date(data) BETWEEN date(?) AND date(?)
+        WHERE user_id = ? AND date(data) BETWEEN date(?) AND date(?)
         GROUP BY ym
         ORDER BY ym
     """
-    df = pd.read_sql_query(sql, conn, params=[_to_iso(inicio), _to_iso(fim)])
+    df = pd.read_sql_query(sql, conn, params=[user_id, _to_iso(inicio), _to_iso(fim)])
     if df.empty:
         return df
     # Converter ym para rótulo Mês/Ano em pt-BR
@@ -157,7 +177,7 @@ def get_monthly_cashflow(conn: sqlite3.Connection, inicio: date, fim: date) -> p
     return df[["mes", "valor"]]
 
 
-def get_monthly_breakdown(conn: sqlite3.Connection, inicio: date, fim: date) -> pd.DataFrame:
+def get_monthly_breakdown(conn: sqlite3.Connection, inicio: date, fim: date, user_id: str) -> pd.DataFrame:
     """Retorna receitas, despesas e saldo por mês entre [inicio, fim]."""
     sql = """
         SELECT
@@ -165,11 +185,11 @@ def get_monthly_breakdown(conn: sqlite3.Connection, inicio: date, fim: date) -> 
             SUM(CASE WHEN tipo = 'Receita' THEN valor ELSE 0 END) AS receitas,
             SUM(CASE WHEN tipo = 'Despesa' THEN valor ELSE 0 END) AS despesas
         FROM transacoes
-        WHERE date(data) BETWEEN date(?) AND date(?)
+        WHERE user_id = ? AND date(data) BETWEEN date(?) AND date(?)
         GROUP BY ym
         ORDER BY ym
     """
-    df = pd.read_sql_query(sql, conn, params=[_to_iso(inicio), _to_iso(fim)])
+    df = pd.read_sql_query(sql, conn, params=[user_id, _to_iso(inicio), _to_iso(fim)])
     if df.empty:
         return df
     def ym_to_label(ym: str) -> str:
@@ -186,6 +206,7 @@ def get_monthly_breakdown(conn: sqlite3.Connection, inicio: date, fim: date) -> 
 
 def get_sum_by_category_and_type(
     conn: sqlite3.Connection,
+    user_id: str,
     inicio: date,
     fim: date,
     tipo: str,
@@ -194,18 +215,19 @@ def get_sum_by_category_and_type(
     sql = """
         SELECT categoria, SUM(valor) AS valor
         FROM transacoes
-        WHERE tipo = ? AND date(data) BETWEEN date(?) AND date(?)
+        WHERE user_id = ? AND tipo = ? AND date(data) BETWEEN date(?) AND date(?)
         GROUP BY categoria
         ORDER BY valor DESC
     """
-    df = pd.read_sql_query(sql, conn, params=[tipo, _to_iso(inicio), _to_iso(fim)])
+    df = pd.read_sql_query(sql, conn, params=[user_id, tipo, _to_iso(inicio), _to_iso(fim)])
     return df
 def get_sum_by_category(conn: sqlite3.Connection, filters: dict) -> pd.DataFrame:
     # Somatório de despesas por categoria com filtros básicos aplicados
     sql = [
-        "SELECT categoria, SUM(valor) AS valor FROM transacoes WHERE tipo='Despesa'"
+        "SELECT categoria, SUM(valor) AS valor FROM transacoes WHERE tipo='Despesa'",
+        "AND user_id = ?",
     ]
-    params = []
+    params = [filters.get("user_id", "")] 
 
     cat = filters.get("categoria")
     subcat = filters.get("subcategoria")

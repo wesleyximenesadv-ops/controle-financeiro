@@ -30,7 +30,44 @@ if "filters" not in st.session_state:
         "data_inicio": date.today().replace(day=1) - relativedelta(months=5),
         "data_fim": date.today(),
         "busca": "",
+        "user_id": "",
     }
+if "compact" not in st.session_state:
+    st.session_state.compact = False
+
+# Identificador do usuário (multi-tenant simples)
+st.sidebar.markdown("### Identificação do usuário")
+try:
+    # Tenta preencher pelo parâmetro da URL ?user=...
+    user_from_qs = ""
+    try:
+        # Streamlit 1.39 possui st.query_params
+        user_from_qs = st.query_params.get("user", "")  # type: ignore[attr-defined]
+    except Exception:
+        qs = st.experimental_get_query_params()
+        user_from_qs = qs.get("user", [""])[0] if qs else ""
+    if not st.session_state.filters["user_id"] and user_from_qs:
+        st.session_state.filters["user_id"] = user_from_qs
+except Exception:
+    pass
+
+user_id = st.sidebar.text_input(
+    "Seu identificador (ex.: e-mail ou apelido)",
+    value=st.session_state.filters.get("user_id", ""),
+    placeholder="ex.: meuemail@dominio.com",
+)
+st.session_state.filters["user_id"] = user_id.strip()
+
+# Modo compacto para celular
+st.sidebar.toggle("Modo compacto (mobile)", key="compact")
+
+if not st.session_state.filters["user_id"]:
+    st.title("💰 Controle Financeiro - Ganhos e Gastos")
+    st.info(
+        "Digite seu identificador na barra lateral para começar. Você também pode usar ?user=seu_id na URL.\n"
+        "Cada usuário fica isolado dos demais."
+    )
+    st.stop()
 
 st.title("💰 Controle Financeiro - Ganhos e Gastos")
 
@@ -78,6 +115,7 @@ with st.sidebar:
                 float(valor) if tipo == "Despesa" else float(valor),
                 conta,
                 tags,
+                st.session_state.filters["user_id"],
             )
             st.success("Lançamento salvo!")
 
@@ -116,6 +154,7 @@ def carregar_transacoes():
     f = st.session_state.filters
     df = db.get_transactions(
         conn,
+        f["user_id"],
         tipo=None if f["tipo"] == "Todos" else f["tipo"],
         categoria=None if f["categoria"] == "Todas" else f["categoria"],
         subcategoria=None if f["subcategoria"] == "Todas" else f["subcategoria"],
@@ -128,54 +167,84 @@ def carregar_transacoes():
 with aba[0]:
     st.subheader("Resumo e Indicadores")
     df = carregar_transacoes()
-    col1, col2, col3 = st.columns(3)
+    if st.session_state.compact:
+        col1, col2, col3 = st.columns(1), None, None  # métricas empilhadas
+        col_metrics = st.container()
+    else:
+        col1, col2, col3 = st.columns(3)
+        col_metrics = None
     total_receitas = df.loc[df.tipo == "Receita", "valor"].sum()
     total_despesas = df.loc[df.tipo == "Despesa", "valor"].sum()
     saldo = total_receitas - total_despesas
-
-    col1.metric("Receitas", f"R$ {total_receitas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    col2.metric("Despesas", f"R$ {total_despesas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    col3.metric("Saldo", f"R$ {saldo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=None)
+    if st.session_state.compact:
+        st.metric("Receitas", f"R$ {total_receitas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        st.metric("Despesas", f"R$ {total_despesas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        st.metric("Saldo", f"R$ {saldo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=None)
+    else:
+        col1.metric("Receitas", f"R$ {total_receitas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        col2.metric("Despesas", f"R$ {total_despesas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        col3.metric("Saldo", f"R$ {saldo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=None)
 
     # Fluxo por mês
-    fluxo = db.get_monthly_cashflow(conn, st.session_state.filters["data_inicio"], st.session_state.filters["data_fim"])
+    fluxo = db.get_monthly_cashflow(conn, st.session_state.filters["data_inicio"], st.session_state.filters["data_fim"], st.session_state.filters["user_id"])
     if not fluxo.empty:
         c = alt.Chart(fluxo).mark_bar().encode(
             x=alt.X("mes:N", title="Mês"),
             y=alt.Y("valor:Q", title="Saldo"),
             color=alt.condition(alt.datum.valor >= 0, alt.value("#16a34a"), alt.value("#dc2626")),
             tooltip=["mes", "valor"],
-        ).properties(height=300)
+        ).properties(height=180 if st.session_state.compact else 300)
         st.altair_chart(c, use_container_width=True)
 
     # Comparativo mês a mês (Receitas, Despesas, Saldo)
-    brkd = db.get_monthly_breakdown(conn, st.session_state.filters["data_inicio"], st.session_state.filters["data_fim"])
+    brkd = db.get_monthly_breakdown(conn, st.session_state.filters["data_inicio"], st.session_state.filters["data_fim"], st.session_state.filters["user_id"])
     if not brkd.empty and len(brkd) >= 2:
         # pegar mês atual do range (último) e anterior
         curr = brkd.iloc[-1]
         prev = brkd.iloc[-2]
-        m1, m0 = st.columns(3)
-        with m1:
+        if st.session_state.compact:
+            # empilhar métricas
             st.metric(
                 label=f"Receitas ({curr['mes']})",
                 value=f"R$ {curr['receitas']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                 delta=f"{((curr['receitas'] - prev['receitas'])/prev['receitas']*100 if prev['receitas'] else 0):.1f}% vs {prev['mes']}",
                 delta_color="normal",
             )
-        with m0:
             st.metric(
                 label=f"Despesas ({curr['mes']})",
                 value=f"R$ {curr['despesas']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                 delta=f"{((curr['despesas'] - prev['despesas'])/prev['despesas']*100 if prev['despesas'] else 0):.1f}% vs {prev['mes']}",
                 delta_color="inverse",
             )
-        with col3:
             st.metric(
                 label=f"Saldo ({curr['mes']})",
                 value=f"R$ {curr['saldo']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                 delta=f"{((curr['saldo'] - prev['saldo'])/abs(prev['saldo'])*100 if prev['saldo'] else 0):.1f}% vs {prev['mes']}",
                 delta_color="normal",
             )
+        else:
+            m1, m0, m2 = st.columns(3)
+            with m1:
+                st.metric(
+                    label=f"Receitas ({curr['mes']})",
+                    value=f"R$ {curr['receitas']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    delta=f"{((curr['receitas'] - prev['receitas'])/prev['receitas']*100 if prev['receitas'] else 0):.1f}% vs {prev['mes']}",
+                    delta_color="normal",
+                )
+            with m0:
+                st.metric(
+                    label=f"Despesas ({curr['mes']})",
+                    value=f"R$ {curr['despesas']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    delta=f"{((curr['despesas'] - prev['despesas'])/prev['despesas']*100 if prev['despesas'] else 0):.1f}% vs {prev['mes']}",
+                    delta_color="inverse",
+                )
+            with m2:
+                st.metric(
+                    label=f"Saldo ({curr['mes']})",
+                    value=f"R$ {curr['saldo']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    delta=f"{((curr['saldo'] - prev['saldo'])/abs(prev['saldo'])*100 if prev['saldo'] else 0):.1f}% vs {prev['mes']}",
+                    delta_color="normal",
+                )
 
         # Avisos de especialista financeiro (guidelines simples)
         st.markdown("### Avisos e recomendações")
@@ -234,12 +303,21 @@ with aba[0]:
     # Por categoria
     por_cat = db.get_sum_by_category(conn, st.session_state.filters)
     if not por_cat.empty:
-        pie = alt.Chart(por_cat).mark_arc().encode(
-            theta="valor:Q",
-            color=alt.Color("categoria:N", legend=None),
-            tooltip=["categoria", "valor"],
-        ).properties(height=300)
-        st.altair_chart(pie, use_container_width=True)
+        if st.session_state.compact:
+            # Gráfico de barras para leitura rápida em telas pequenas
+            barc = alt.Chart(por_cat).mark_bar().encode(
+                x=alt.X("valor:Q", title="Total"),
+                y=alt.Y("categoria:N", sort='-x', title="Categoria"),
+                tooltip=["categoria", "valor"],
+            ).properties(height=220)
+            st.altair_chart(barc, use_container_width=True)
+        else:
+            pie = alt.Chart(por_cat).mark_arc().encode(
+                theta="valor:Q",
+                color=alt.Color("categoria:N", legend=None),
+                tooltip=["categoria", "valor"],
+            ).properties(height=300)
+            st.altair_chart(pie, use_container_width=True)
 
 with aba[1]:
     st.subheader("Transações")
@@ -314,6 +392,7 @@ with aba[3]:
                         float(row["valor"]),
                         str(row.get("conta", "")),
                         str(row.get("tags", "")),
+                        st.session_state.filters["user_id"],
                     )
                     linhas += 1
                 st.success(f"Importação concluída: {linhas} linhas.")
