@@ -83,33 +83,52 @@ def add_transaction(
     valor: float,
     conta: str,
     tags: str,
-    user_id: str,
+    user_id: Optional[str] = None,
 ) -> int:
     cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO transacoes (data, tipo, categoria, subcategoria, descricao, valor, conta, tags, user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            _to_iso(data_lanc),
-            tipo,
-            categoria,
-            subcategoria,
-            descricao,
-            float(valor),
-            conta,
-            tags,
-            user_id,
-        ),
-    )
+    if user_id is None:
+        # Compatibilidade com versões antigas: sem user_id
+        cur.execute(
+            """
+            INSERT INTO transacoes (data, tipo, categoria, subcategoria, descricao, valor, conta, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _to_iso(data_lanc),
+                tipo,
+                categoria,
+                subcategoria,
+                descricao,
+                float(valor),
+                conta,
+                tags,
+            ),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO transacoes (data, tipo, categoria, subcategoria, descricao, valor, conta, tags, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _to_iso(data_lanc),
+                tipo,
+                categoria,
+                subcategoria,
+                descricao,
+                float(valor),
+                conta,
+                tags,
+                user_id,
+            ),
+        )
     conn.commit()
     return cur.lastrowid
 
 
 def get_transactions(
     conn: sqlite3.Connection,
-    user_id: str,
+    user_id: Optional[str] = None,
     tipo: Optional[str] = None,
     categoria: Optional[str] = None,
     subcategoria: Optional[str] = None,
@@ -119,9 +138,11 @@ def get_transactions(
 ) -> pd.DataFrame:
     sql = [
         "SELECT id, data, tipo, categoria, subcategoria, descricao, valor, conta, tags FROM transacoes WHERE 1=1",
-        "AND user_id = ?",
     ]
-    params = [user_id]
+    params: list = []
+    if user_id:
+        sql.append("AND user_id = ?")
+        params.append(user_id)
 
     if tipo:
         sql.append("AND tipo = ?")
@@ -151,17 +172,23 @@ def get_transactions(
     return df
 
 
-def get_monthly_cashflow(conn: sqlite3.Connection, inicio: date, fim: date, user_id: str) -> pd.DataFrame:
+def get_monthly_cashflow(conn: sqlite3.Connection, inicio: date, fim: date, user_id: Optional[str] = None) -> pd.DataFrame:
     sql = """
         SELECT
             strftime('%Y-%m', date(data)) AS ym,
             SUM(CASE WHEN tipo = 'Receita' THEN valor ELSE -valor END) AS valor
         FROM transacoes
-        WHERE user_id = ? AND date(data) BETWEEN date(?) AND date(?)
-        GROUP BY ym
+        WHERE 1=1 AND date(data) BETWEEN date(?) AND date(?)
+    """
+    params: list = [_to_iso(inicio), _to_iso(fim)]
+    if user_id:
+        sql += " AND user_id = ?"
+        params.append(user_id)
+    sql += """
+    GROUP BY ym
         ORDER BY ym
     """
-    df = pd.read_sql_query(sql, conn, params=[user_id, _to_iso(inicio), _to_iso(fim)])
+    df = pd.read_sql_query(sql, conn, params=params)
     if df.empty:
         return df
     # Converter ym para rótulo Mês/Ano em pt-BR
@@ -177,19 +204,26 @@ def get_monthly_cashflow(conn: sqlite3.Connection, inicio: date, fim: date, user
     return df[["mes", "valor"]]
 
 
-def get_monthly_breakdown(conn: sqlite3.Connection, inicio: date, fim: date, user_id: str) -> pd.DataFrame:
+def get_monthly_breakdown(conn: sqlite3.Connection, inicio: date, fim: date, user_id: Optional[str] = None) -> pd.DataFrame:
     """Retorna receitas, despesas e saldo por mês entre [inicio, fim]."""
-    sql = """
-        SELECT
-            strftime('%Y-%m', date(data)) AS ym,
-            SUM(CASE WHEN tipo = 'Receita' THEN valor ELSE 0 END) AS receitas,
-            SUM(CASE WHEN tipo = 'Despesa' THEN valor ELSE 0 END) AS despesas
-        FROM transacoes
-        WHERE user_id = ? AND date(data) BETWEEN date(?) AND date(?)
-        GROUP BY ym
-        ORDER BY ym
-    """
-    df = pd.read_sql_query(sql, conn, params=[user_id, _to_iso(inicio), _to_iso(fim)])
+    sql = [
+        "SELECT",
+        "    strftime('%Y-%m', date(data)) AS ym,",
+        "    SUM(CASE WHEN tipo = 'Receita' THEN valor ELSE 0 END) AS receitas,",
+        "    SUM(CASE WHEN tipo = 'Despesa' THEN valor ELSE 0 END) AS despesas",
+        "FROM transacoes WHERE 1=1",
+    ]
+    params: list = []
+    if user_id:
+        sql.append("AND user_id = ?")
+        params.append(user_id)
+    sql.extend([
+        "AND date(data) BETWEEN date(?) AND date(?)",
+        "GROUP BY ym",
+        "ORDER BY ym",
+    ])
+    params.extend([_to_iso(inicio), _to_iso(fim)])
+    df = pd.read_sql_query(" \n".join(sql), conn, params=params)
     if df.empty:
         return df
     def ym_to_label(ym: str) -> str:
@@ -206,7 +240,7 @@ def get_monthly_breakdown(conn: sqlite3.Connection, inicio: date, fim: date, use
 
 def get_sum_by_category_and_type(
     conn: sqlite3.Connection,
-    user_id: str,
+    user_id: Optional[str],
     inicio: date,
     fim: date,
     tipo: str,
@@ -215,19 +249,26 @@ def get_sum_by_category_and_type(
     sql = """
         SELECT categoria, SUM(valor) AS valor
         FROM transacoes
-        WHERE user_id = ? AND tipo = ? AND date(data) BETWEEN date(?) AND date(?)
+        WHERE 1=1 AND tipo = ? AND date(data) BETWEEN date(?) AND date(?)
         GROUP BY categoria
         ORDER BY valor DESC
     """
-    df = pd.read_sql_query(sql, conn, params=[user_id, tipo, _to_iso(inicio), _to_iso(fim)])
+    params: list = [tipo, _to_iso(inicio), _to_iso(fim)]
+    if user_id:
+        sql = sql.replace("WHERE 1=1", "WHERE user_id = ?")
+        params = [user_id] + params
+    df = pd.read_sql_query(sql, conn, params=params)
     return df
 def get_sum_by_category(conn: sqlite3.Connection, filters: dict) -> pd.DataFrame:
     # Somatório de despesas por categoria com filtros básicos aplicados
     sql = [
         "SELECT categoria, SUM(valor) AS valor FROM transacoes WHERE tipo='Despesa'",
-        "AND user_id = ?",
     ]
-    params = [filters.get("user_id", "")] 
+    params: list = []
+    uid = filters.get("user_id", "")
+    if uid:
+        sql.append("AND user_id = ?")
+        params.append(uid)
 
     cat = filters.get("categoria")
     subcat = filters.get("subcategoria")

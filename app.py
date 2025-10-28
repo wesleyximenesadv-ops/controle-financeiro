@@ -21,6 +21,40 @@ st.set_page_config(page_title="Controle Financeiro", page_icon="💰", layout="w
 conn = db.get_connection()
 db.init_db(conn)
 
+# --- Backward-compatibilidade com versões antigas de db.py no Cloud ---
+def safe_add_transaction(*args, **kwargs):
+    try:
+        return db.add_transaction(*args, **kwargs)
+    except TypeError:
+        # Remover user_id (último param) e tentar assinatura antiga
+        if len(args) >= 10:
+            args = args[:-1]
+        elif "user_id" in kwargs:
+            kwargs.pop("user_id", None)
+        return db.add_transaction(*args, **kwargs)
+
+
+def safe_get_transactions(conn, user_id, **k):
+    try:
+        return db.get_transactions(conn, user_id, **k)
+    except TypeError:
+        # assinatura antiga sem user_id
+        return db.get_transactions(conn, **k)
+
+
+def safe_get_monthly_cashflow(conn, inicio, fim, user_id):
+    try:
+        return db.get_monthly_cashflow(conn, inicio, fim, user_id)
+    except TypeError:
+        return db.get_monthly_cashflow(conn, inicio, fim)
+
+
+def safe_get_monthly_breakdown(conn, inicio, fim, user_id):
+    try:
+        return db.get_monthly_breakdown(conn, inicio, fim, user_id)
+    except TypeError:
+        return db.get_monthly_breakdown(conn, inicio, fim)
+
 # Estado inicial
 if "filters" not in st.session_state:
     st.session_state.filters = {
@@ -105,7 +139,7 @@ with st.sidebar:
         elif valor <= 0:
             st.warning("Informe um valor maior que zero.")
         else:
-            db.add_transaction(
+            safe_add_transaction(
                 conn,
                 data_lanc,
                 tipo,
@@ -152,7 +186,7 @@ aba = st.tabs(["Visão geral", "Transações", "Relatórios", "Importar/Exportar
 
 def carregar_transacoes():
     f = st.session_state.filters
-    df = db.get_transactions(
+    df = safe_get_transactions(
         conn,
         f["user_id"],
         tipo=None if f["tipo"] == "Todos" else f["tipo"],
@@ -186,7 +220,7 @@ with aba[0]:
         col3.metric("Saldo", f"R$ {saldo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=None)
 
     # Fluxo por mês
-    fluxo = db.get_monthly_cashflow(conn, st.session_state.filters["data_inicio"], st.session_state.filters["data_fim"], st.session_state.filters["user_id"])
+    fluxo = safe_get_monthly_cashflow(conn, st.session_state.filters["data_inicio"], st.session_state.filters["data_fim"], st.session_state.filters["user_id"])
     if not fluxo.empty:
         c = alt.Chart(fluxo).mark_bar().encode(
             x=alt.X("mes:N", title="Mês"),
@@ -197,7 +231,7 @@ with aba[0]:
         st.altair_chart(c, use_container_width=True)
 
     # Comparativo mês a mês (Receitas, Despesas, Saldo)
-    brkd = db.get_monthly_breakdown(conn, st.session_state.filters["data_inicio"], st.session_state.filters["data_fim"], st.session_state.filters["user_id"])
+    brkd = safe_get_monthly_breakdown(conn, st.session_state.filters["data_inicio"], st.session_state.filters["data_fim"], st.session_state.filters["user_id"])
     if not brkd.empty and len(brkd) >= 2:
         # pegar mês atual do range (último) e anterior
         curr = brkd.iloc[-1]
@@ -382,7 +416,7 @@ with aba[3]:
                 linhas = 0
                 for _, row in imp.iterrows():
                     dt = pd.to_datetime(row["data"]).date()
-                    db.add_transaction(
+                    safe_add_transaction(
                         conn,
                         dt,
                         str(row["tipo"]),
