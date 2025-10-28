@@ -15,7 +15,7 @@ from categories import (
     get_any_subcategories,
 )
 
-st.set_page_config(page_title="Controle Financeiro", page_icon="💰", layout="wide")
+st.set_page_config(page_title="Controle Financeiro", page_icon="💰", layout="centered", initial_sidebar_state="collapsed")
 
 # Inicialização do banco
 conn = db.get_connection()
@@ -67,7 +67,7 @@ if "filters" not in st.session_state:
         "user_id": "",
     }
 if "compact" not in st.session_state:
-    st.session_state.compact = False
+    st.session_state.compact = True  # mobile-first: sempre compacto
 
 # Identificador do usuário (multi-tenant simples)
 st.sidebar.markdown("### Identificação do usuário")
@@ -82,6 +82,13 @@ try:
         user_from_qs = qs.get("user", [""])[0] if qs else ""
     if not st.session_state.filters["user_id"] and user_from_qs:
         st.session_state.filters["user_id"] = user_from_qs
+    # Auto-ativar modo compacto via ?compact=1
+    try:
+        compact_qs = st.query_params.get("compact", "")  # type: ignore[attr-defined]
+    except Exception:
+        compact_qs = (qs.get("compact", [""])[0] if 'qs' in locals() and qs else "")
+    if str(compact_qs).strip() in ("1", "true", "True"):
+        st.session_state.compact = True
 except Exception:
     pass
 
@@ -93,68 +100,77 @@ user_id = st.sidebar.text_input(
 st.session_state.filters["user_id"] = user_id.strip()
 
 # Modo compacto para celular
-st.sidebar.toggle("Modo compacto (mobile)", key="compact")
+# Forçar modo compacto para mobile-first; remover toggle da UI
+st.session_state.compact = True
 
 if not st.session_state.filters["user_id"]:
-    st.title("💰 Controle Financeiro - Ganhos e Gastos")
+    st.title("💰 Controle Financeiro - Ganhos e Gastos (Mobile)")
     st.info(
-        "Digite seu identificador na barra lateral para começar. Você também pode usar ?user=seu_id na URL.\n"
+        "Informe um identificador para começar. Você também pode usar ?user=seu_id na URL.\n"
         "Cada usuário fica isolado dos demais."
     )
+    uid_main = st.text_input("Seu identificador (ex.: e-mail ou apelido)", placeholder="ex.: meuemail@dominio.com")
+    colA, colB = st.columns([1,2])
+    with colA:
+        if st.button("Entrar", type="primary"):
+            if uid_main.strip():
+                st.session_state.filters["user_id"] = uid_main.strip()
+                st.experimental_rerun()
+            else:
+                st.warning("Informe um identificador válido.")
     st.stop()
 
 st.title("💰 Controle Financeiro - Ganhos e Gastos")
 
-with st.sidebar:
-    st.header("Adicionar Lançamento")
-    tipo = st.radio("Tipo", ["Despesa", "Receita"], horizontal=True)
-    # Categorias dependem do tipo selecionado
+st.markdown("#### Lançamento rápido")
+tipo = st.radio("Tipo", ["Despesa", "Receita"], horizontal=True)
+# Categorias dependem do tipo selecionado
+if tipo == "Receita":
+    categorias = ["Selecionar..."] + get_income_categories()
+else:
+    categorias = ["Selecionar..."] + get_categories()
+categoria = st.selectbox("Categoria", categorias, index=0)
+if categoria == "Selecionar...":
+    subcategorias = ["Selecionar..."]
+else:
     if tipo == "Receita":
-        categorias = ["Selecionar..."] + get_income_categories()
+        subcategorias = ["Selecionar..."] + get_income_subcategories(categoria)
     else:
-        categorias = ["Selecionar..."] + get_categories()
-    categoria = st.selectbox("Categoria", categorias, index=0)
-    if categoria == "Selecionar...":
-        subcategorias = ["Selecionar..."]
+        subcategorias = ["Selecionar..."] + get_subcategories(categoria)
+subcategoria = st.selectbox("Subcategoria", subcategorias, index=0)
+
+col1, col2 = st.columns(2)
+with col1:
+    data_lanc = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
+with col2:
+    valor = st.number_input("Valor", min_value=0.0, step=1.0, format="%.2f")
+
+conta = st.text_input("Conta/Carteira", placeholder="Ex.: Nubank, Itaú, Carteira")
+descricao = st.text_area("Descrição/Observações", placeholder="Opcional")
+tags = st.text_input("Tags", placeholder="Ex.: #trabalho #mercado")
+
+if st.button("Salvar lançamento", type="primary", use_container_width=True):
+    if categoria == "Selecionar..." or subcategoria == "Selecionar...":
+        st.warning("Selecione categoria e subcategoria.")
+    elif valor <= 0:
+        st.warning("Informe um valor maior que zero.")
     else:
-        if tipo == "Receita":
-            subcategorias = ["Selecionar..."] + get_income_subcategories(categoria)
-        else:
-            subcategorias = ["Selecionar..."] + get_subcategories(categoria)
-    subcategoria = st.selectbox("Subcategoria", subcategorias, index=0)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        data_lanc = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
-    with col2:
-        valor = st.number_input("Valor", min_value=0.0, step=1.0, format="%.2f")
-
-    conta = st.text_input("Conta/Carteira", placeholder="Ex.: Nubank, Itaú, Carteira")
-    descricao = st.text_area("Descrição/Observações", placeholder="Opcional")
-    tags = st.text_input("Tags", placeholder="Ex.: #trabalho #mercado")
-
-    if st.button("Salvar lançamento", type="primary", use_container_width=True):
-        if categoria == "Selecionar..." or subcategoria == "Selecionar...":
-            st.warning("Selecione categoria e subcategoria.")
-        elif valor <= 0:
-            st.warning("Informe um valor maior que zero.")
-        else:
-            safe_add_transaction(
-                conn,
-                data_lanc,
-                tipo,
-                categoria,
-                subcategoria,
-                descricao,
-                float(valor) if tipo == "Despesa" else float(valor),
-                conta,
-                tags,
-                st.session_state.filters["user_id"],
-            )
-            st.success("Lançamento salvo!")
+        safe_add_transaction(
+            conn,
+            data_lanc,
+            tipo,
+            categoria,
+            subcategoria,
+            descricao,
+            float(valor) if tipo == "Despesa" else float(valor),
+            conta,
+            tags,
+            st.session_state.filters["user_id"],
+        )
+        st.success("Lançamento salvo!")
 
     st.divider()
-    st.header("Filtros")
+    st.header("Filtros (opcional)")
 
     tipos = ["Todos", "Despesa", "Receita"]
     st.session_state.filters["tipo"] = st.selectbox("Tipo", tipos, index=0)
