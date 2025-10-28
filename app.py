@@ -353,6 +353,30 @@ with aba[0]:
             ).properties(height=300)
             st.altair_chart(pie, use_container_width=True)
 
+    # Novidade: Gastos por Subcategoria (filtrável por Categoria)
+    st.markdown("### Gastos por Subcategoria")
+    despesas_df = df[df["tipo"] == "Despesa"].copy()
+    cat_options = sorted(despesas_df["categoria"].dropna().unique().tolist()) if not despesas_df.empty else []
+    if not cat_options:
+        st.info("Sem despesas no período para detalhar subcategorias.")
+    else:
+        sel_cat = st.selectbox("Categoria para detalhar", options=cat_options, index=0)
+        sub_df = (
+            despesas_df[despesas_df["categoria"] == sel_cat]
+            .groupby("subcategoria", as_index=False)["valor"].sum()
+            .sort_values("valor", ascending=False)
+        )
+        if sub_df.empty:
+            st.info("Sem subcategorias encontradas para a categoria selecionada.")
+        else:
+            h = 220 if st.session_state.compact else max(260, 18 * len(sub_df))
+            sub_chart = alt.Chart(sub_df).mark_bar().encode(
+                x=alt.X("valor:Q", title="Total"),
+                y=alt.Y("subcategoria:N", sort='-x', title="Subcategoria"),
+                tooltip=["subcategoria", "valor"],
+            ).properties(height=h)
+            st.altair_chart(sub_chart, use_container_width=True)
+
 with aba[1]:
     st.subheader("Transações")
     df = carregar_transacoes()
