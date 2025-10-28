@@ -70,7 +70,7 @@ if "compact" not in st.session_state:
     st.session_state.compact = True  # mobile-first: sempre compacto
 
 # Identificador do usuário (multi-tenant simples)
-st.sidebar.markdown("### Identificação do usuário")
+st.sidebar.markdown("### Usuário atual")
 try:
     # Tenta preencher pelo parâmetro da URL ?user=...
     user_from_qs = ""
@@ -92,12 +92,11 @@ try:
 except Exception:
     pass
 
-user_id = st.sidebar.text_input(
-    "Seu identificador (ex.: e-mail ou apelido)",
-    value=st.session_state.filters.get("user_id", ""),
-    placeholder="ex.: meuemail@dominio.com",
-)
-st.session_state.filters["user_id"] = user_id.strip()
+# Sidebar: apenas exibição do usuário atual ou instrução
+if st.session_state.filters.get("user_id"):
+    st.sidebar.success(f"ID: {st.session_state.filters['user_id']}")
+else:
+    st.sidebar.info("Use o campo na tela inicial ou a URL ?user=seu_id")
 
 # Modo compacto para celular
 # Forçar modo compacto para mobile-first; remover toggle da UI
@@ -109,7 +108,7 @@ if not st.session_state.filters["user_id"]:
         "Informe um identificador para começar. Você também pode usar ?user=seu_id na URL.\n"
         "Cada usuário fica isolado dos demais."
     )
-    uid_main = st.text_input("Seu identificador (ex.: e-mail ou apelido)", placeholder="ex.: meuemail@dominio.com")
+    uid_main = st.text_input("Seu identificador (ex.: e-mail ou apelido)", key="uid_main", placeholder="ex.: meuemail@dominio.com")
     colA, colB = st.columns([1,2])
     with colA:
         if st.button("Entrar", type="primary"):
